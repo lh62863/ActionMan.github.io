@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta charset="utf-8" />
+		<link rel="stylesheet" type="text/css" href="css/style.css" />
+		<title>Binlog从查看到使用</title>
+	</head>
+<body>
+<h1>Binlog从查看到使用</h1>
+
+<p>在很多企业实际业务场景中，需要同步目标业务mysql数据库，经典的做法是通过binlog实现。在保证mysql高可用场景中，会使用master-slave的方式，其中slave也是通过binlog实现对master的实时数据同步。既然binlog用处这么大，下面我们一起去探究下。</p>
+
+<h2>binlog是什么</h2>
+
+<p>binlog是mysql数据库服务在运行过程中，面对数据增删改操作时，实时记录下的操作日志，可用于宕机后数据恢复、事务失败时回滚、数据同步等场景，对数据库十分重要。</p>
+
+<p>binlog日志是否开启以及存储地址该如何查询呢，解答之前先说两个以前经常用到，但会混淆的命令。</p>
+
+<p>命令：</p>
+
+<pre><code>show status;</code></pre>
+
+<p>当不记得变量全名时，可使用like进行模糊查询。</p>
+
+<pre><code>show status like &#39;%变量名称%&#39;;</code></pre>
+
+<p>status表示状态，是一个动态变量，会随着mysql服务的运行，发生改变，如数据库连接数、文件打开数量、表打开数量等。</p>
+
+<p>命令：</p>
+
+<pre><code>show variables;</code></pre>
+
+<p>当不记得变量全名时，可使用like进行模糊查询。</p>
+
+<pre><code>show variables like &#39;%变量名称%&#39;;</code></pre>
+
+<p>variables表示配置变量，是服务启动时预先配置好的变量，比如版本、端口、连接超时时间，还包括本文探讨的binlog是否开启及存储位置。</p>
+
+<p>使用如下指令查看binlog是否开启。</p>
+
+<pre><code>show variables like &#39;%log_bin%&#39;;</code></pre>
+
+<p>结果如下：</p>
+
+<figure><img src="DraggedImage.png"/></figure>
+
+<p>可以看到binlog已开启，并且存放在/usr/local/var/mysql目录下，查看后发现文件会以后缀顺序命名。</p>
+
+<figure><img src="DraggedImage-1.png"/></figure>
+
+<p>再查看binlog真实内容之前，先探讨binlog的三种模式。</p>
+
+<h2>binlog模式</h2>
+
+<p>mysql可以选择三种binlog模式进行设置，分别是statement模式、row模式、mix模式，每种模式各有优缺点，按需选择。</p>
+
+<ul>
+	<li>statement模式，此种为默认模式，语言级，即会记录每一次会发生数据修改时的sql语句内容。</li>
+	<li>row模式，行级，即会记录每一行数据发生变化的情况。</li>
+	<li>mixed模式，混合级，前两种模式的混合，会根据实际的语句情况进行选择。</li>
+</ul>
+
+<p>我们通过实际的操作来看看不同模式下的binlog记录内容会有什么不同，通过binlog<em>format变量可以看到当前处于row模式。</em></p>
+
+<figure><img src="DraggedImage-2.png"/></figure>
+
+<p>终于到了见识庐山真面目的时候了，看一看binlog到底长什么样子，直接查看binlog-00001，内容如下：</p>
+
+<figure><img src="DraggedImage-3.png"/></figure>
+
+<p>会发现有很多乱码，binlog的命名已经说的很清楚了，是binary日志，二进制文件，所以无法直接查看，需要利用mysql自带的mysqlbinlog工具。</p>
+
+<p>执行一段很简单的插入语句</p>
+
+<pre><code>insert into `person` values(7, &#39;kobe&#39;, 43, &#39;usa&#39;)</code></pre>
+
+<p>然后再查看binlog文件内容</p>
+
+<pre><code>mysqlbinlog binlog.000001</code></pre>
+
+<p>结果如下：</p>
+
+<figure><img src="DraggedImage-4.png"/></figure>
+
+<p>可以看到，ROW模式下，会记录数据内容的详细修改。</p>
+
+<p>修改my.cnf配置文件，将binlog模式改成STATEMENT，同样执行一条类似的插入内容，会发现此时的binlog记录的只是执行语句。</p>
+
+<figure><img src="DraggedImage-5.png"/></figure>
+
+<p>再次将binlog模式改成MIXED，同样执行一条类似的插入内容，可以看到记录与STATEMENT模式类似，如前文所言，MIXED模式会根据情况在两种模式间进行最优选择。</p>
+
+<figure><img src="DraggedImage-6.png"/></figure>
+
+<p>通过上述简单的实验，对binlog的内容应该多了一份感性认知，至少脸熟了，下次再提到这个话题，不会一脸茫然了。</p>
+
+<h2>同步实现</h2>
+
+<p>接下来我们来看看当如何通过binlog实现不同服务间的数据同步问题。</p>
+
+<p>binlog以事件的形式记录数据库修改操作，通过show binlog events进行查看，也可查看指定日志文件内容 show binlog events in ‘xxxx’。</p>
+
+<figure><img src="DraggedImage-7.png"/></figure>
+
+<p>在binlog<em>event.h文件中，定义了所有三十多个eventType，大多数不用关心，说两个与修改操作十分密切的eventType，QUERY</em>EVENT和ROWS<em>EVENT。</em></p>
+
+<p>QUERY<em>EVENT以文本的形式记录事务操作，类型的事件通常在以下几种情况下使用：</em></p>
+
+<ol>
+	<li>事务开始时，执行的BEGIN操作</li>
+	<li>STATEMENT格式中的DML操作</li>
+	<li>ROW格式中的DDL操作</li>
+</ol>
+
+<p>ROWS<em>EVENT 对于ROW格式的binlog，所有的DML语句都是记录在此事件中。</em></p>
+
+<p>ROWS<em>EVENT分为三种：WRITE</em>ROWS<em>EVENT，UPDATE</em>ROWS<em>EVENT，DELETE</em>ROWS<em>EVENT，分别对应insert，update和delete操作，包含要插入的数据、修改前后的数据、被删除的主键。但这些内容并不是以文本形式记录，无法直观展示，需要借助mysqlbinlog工具。</em></p>
+
+<p>至此，大家应该对利用binlog进行数据同步的原理有了一定的了解，同步工具也是利用读取binlog中的内容，对事件进行解析重放，达到数据同步的效果。通常的做法是，同步工具通过3306端口与mysql服务建立连接，并不断轮询读取新增的binlog内容，至于如何保证binlog数据的定位、不丢失、安全性等，又是一个比较大的话题，本文先不展开，这些能力大多是由同步工具保证。</p>
+
+<p>下面介绍两种常用的同步工具：</p>
+
+<ul>
+	<li>canal</li>
+	<li>mysql-binlog-connector-java（<a href="https://github.com/osheroff/mysql-binlog-connector-java">https://github.com/osheroff/mysql-binlog-connector-java</a>也提供了其他语言版本）</li>
+</ul>
+
+<p>具体使用实现，可自行谷歌百度。</p>
+
+</body>
+</html>
+
